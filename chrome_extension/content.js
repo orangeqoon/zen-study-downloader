@@ -1,8 +1,8 @@
-// ZEN Study Downloader + Slide Images & Exercises Content Script v7.0
-// 動画・スライド・確認テスト（解答解説付きスクショ）の全自動一括保存
+// ZEN Study Downloader + Slide Images & Exercises Content Script v7.1
+// 問題文・選択肢・解答解説を1枚の完全な高画質スクショとして自動保存
 (function () {
   'use strict';
-  console.log("[ZEN Downloader + Images & Exercises v7.0] Content script initialized.");
+  console.log("[ZEN Downloader + Images & Exercises v7.1] Content script initialized.");
 
   const LOCAL_SERVER = "http://localhost:5000/download";
   let isProcessing = false;
@@ -181,13 +181,54 @@
     });
   }
 
-  // 確認テスト（Exercise）のDOMをレンダリングし、問題ごとの高画質スクショを生成
+  // [問題文 + 選択肢 + 解答解説] をすべて含む完全な問題カード要素を正確に特定
+  function findQuestionCards(doc) {
+    const allElements = Array.from(doc.querySelectorAll('section, article, div, li'));
+
+    // 1. 「選択肢」と「解答」の双方を内包している親コンテナを探索
+    const candidates = allElements.filter((el) => {
+      const text = el.innerText || "";
+      return (text.includes("【選択肢】") || text.includes("選択肢")) && (text.includes("解答：") || text.includes("解答") || text.includes("解説"));
+    });
+
+    if (candidates.length > 0) {
+      // 他の候補コンテナを内包しない「末端の問題カード」だけを抽出（＝1問ごとの完全な枠）
+      const leafCards = candidates.filter((card) => {
+        return !candidates.some((other) => other !== card && card.contains(other));
+      });
+      if (leafCards.length > 0) {
+        return leafCards;
+      }
+    }
+
+    // 2. ラジオボタン等と解答解説を含むブロック
+    const radioCandidates = allElements.filter((el) => {
+      const text = el.innerText || "";
+      const hasRadio = el.querySelector('input[type="radio"], input[type="checkbox"], svg');
+      return hasRadio && (text.includes("解答：") || text.includes("解答") || text.includes("解説"));
+    });
+
+    if (radioCandidates.length > 0) {
+      const leafRadio = radioCandidates.filter((card) => {
+        return !radioCandidates.some((other) => other !== card && card.contains(other));
+      });
+      if (leafRadio.length > 0) {
+        return leafRadio;
+      }
+    }
+
+    // 3. フォールバック: メイン領域
+    const mainEl = doc.querySelector('main') || doc.querySelector('article') || doc.querySelector('#root') || doc.body;
+    return [mainEl];
+  }
+
+  // 確認テスト（Exercise）のDOMをレンダリングし、[問題＋選択肢＋解説] が1つになった高画質スクショを生成
   async function captureExerciseScreenshots(exerciseItem) {
     return new Promise((resolve) => {
       let resolved = false;
 
       const iframe = document.createElement("iframe");
-      iframe.style.cssText = "position:fixed;bottom:0;right:0;width:1080px;height:900px;opacity:0.01;pointer-events:none;border:none;z-index:-9999;";
+      iframe.style.cssText = "position:fixed;bottom:0;right:0;width:1100px;height:950px;opacity:0.01;pointer-events:none;border:none;z-index:-9999;";
       iframe.src = exerciseItem.contentUrl;
 
       const startTime = Date.now();
@@ -200,25 +241,14 @@
           if (!ifrDoc || !ifrDoc.body) return;
 
           const textContent = ifrDoc.body.innerText || "";
-          const hasChoices = textContent.includes("【選択肢】") || textContent.includes("解答：") || textContent.includes("解説") || ifrDoc.querySelector('input[type="radio"], input[type="checkbox"]');
+          const isLoaded = (textContent.includes("【選択肢】") || textContent.includes("選択肢")) && (textContent.includes("解答：") || textContent.includes("解答") || textContent.includes("解説"));
 
-          if (hasChoices || (Date.now() - startTime >= 4000)) {
+          if (isLoaded || (Date.now() - startTime >= 4000)) {
             clearInterval(checkInterval);
-            await new Promise((r) => setTimeout(r, 1200));
+            await new Promise((r) => setTimeout(r, 1500));
 
             const capturedList = [];
-
-            // 1. 各問題カード（Question Card）を検索
-            let questionCards = Array.from(ifrDoc.querySelectorAll('section, div'))
-              .filter((el) => {
-                const text = el.innerText || "";
-                return (text.includes("【選択肢】") || text.includes("解答：")) && el.offsetHeight > 120 && el.offsetWidth > 400;
-              });
-
-            // 親コンテナを除外して末端のカードのみ抽出
-            questionCards = questionCards.filter((card) => {
-              return !questionCards.some((other) => other !== card && card.contains(other));
-            });
+            const questionCards = findQuestionCards(ifrDoc);
 
             if (questionCards.length > 0 && typeof html2canvas !== "undefined") {
               for (let qIdx = 0; qIdx < questionCards.length; qIdx++) {
@@ -240,24 +270,6 @@
                   console.error("html2canvas card error:", e);
                 }
               }
-            } else if (typeof html2canvas !== "undefined") {
-              // フォールバック: メイン全体をキャプチャ
-              const targetEl = ifrDoc.querySelector('main, article, #root') || ifrDoc.body;
-              try {
-                const canvas = await html2canvas(targetEl, {
-                  scale: 2,
-                  useCORS: true,
-                  logging: false,
-                  backgroundColor: "#ffffff"
-                });
-                const dataUrl = canvas.toDataURL("image/png");
-                capturedList.push({
-                  filename: `${String(exerciseItem.index).padStart(2, '0')}_${clean_filename(exerciseItem.title)}_全問.png`,
-                  image_base64: dataUrl
-                });
-              } catch (e) {
-                console.error("html2canvas body error:", e);
-              }
             }
 
             resolved = true;
@@ -274,7 +286,7 @@
           try { iframe.remove(); } catch (e) {}
           resolve([]);
         }
-      }, 9000);
+      }, 10000);
 
       document.body.appendChild(iframe);
     });
@@ -495,7 +507,7 @@
         }
       }
 
-      // 2. 確認テストの画像保存
+      // 2. 確認テストの画像保存（[問題＋選択肢＋解説] 一体型）
       if (exercises.length > 0) {
         const chapterExerciseImages = [];
         for (let exIdx = 0; exIdx < exercises.length; exIdx++) {
@@ -533,17 +545,28 @@
   // 単一の確認テストページで即座に保存
   async function runSingleExerciseSave(btn) {
     btn.innerHTML = `<span>⏳</span><span>スクショ撮影中...</span>`;
-    const targetEl = document.querySelector('main, article, #root') || document.body;
-    if (typeof html2canvas !== "undefined") {
+    const questionCards = findQuestionCards(document);
+
+    if (typeof html2canvas !== "undefined" && questionCards.length > 0) {
       try {
-        const canvas = await html2canvas(targetEl, {
-          scale: 2,
-          useCORS: true,
-          logging: false,
-          backgroundColor: "#ffffff"
-        });
-        const dataUrl = canvas.toDataURL("image/png");
         const pageInfo = getPageInfo();
+        const capturedList = [];
+        for (let qIdx = 0; qIdx < questionCards.length; qIdx++) {
+          const card = questionCards[qIdx];
+          const canvas = await html2canvas(card, {
+            scale: 2,
+            useCORS: true,
+            logging: false,
+            backgroundColor: "#ffffff"
+          });
+          const dataUrl = canvas.toDataURL("image/png");
+          const qNum = String(qIdx + 1).padStart(2, '0');
+          capturedList.push({
+            filename: `確認テスト_${pageInfo.exerciseId}_問${qNum}.png`,
+            image_base64: dataUrl
+          });
+        }
+
         const csrfToken = await getCsrfToken();
         let chapterTitle = "確認テスト";
         try {
@@ -554,11 +577,11 @@
         const payload = {
           type: "exercises_batch",
           chapter_title: chapterTitle,
-          exercise_images: [{ filename: `確認テスト_${pageInfo.exerciseId}.png`, image_base64: dataUrl }],
+          exercise_images: capturedList,
           download_folder: ""
         };
         await fetch(LOCAL_SERVER, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-        btn.innerHTML = `<span>🎉</span><span>確認テストの画像を保存しました！</span>`;
+        btn.innerHTML = `<span>🎉</span><span>確認テスト（全${capturedList.length}問）を画像保存しました！</span>`;
         setTimeout(() => { renderButtons(); }, 4000);
       } catch (e) {
         alert("キャプチャに失敗しました。");
