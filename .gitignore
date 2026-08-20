@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.spec
+build/
+dist/
+.venv/
+venv/
+ENV/
+cookies_nico.txt
+zen_downloader_config.json
+youtube_downloads/
+*.log
+.DS_Store
+Thumbs.db
