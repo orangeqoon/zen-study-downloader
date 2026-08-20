@@ -12,13 +12,15 @@ import re
 import json
 import time
 import html
+import shutil
+import glob
 import requests
 import rookiepy
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 
-COURSE_ID = "449211952"
-BASE_DIR = r"D:\ZEN大学関係\大学動画\民俗学"
+DEFAULT_COURSE_ID = "302927622"
+DEFAULT_BASE_DIR = r"D:\ZEN大学関係\大学動画\地域アントレプレナーシップ"
 
 def clean_filename(text):
     if not text:
@@ -206,7 +208,7 @@ def build_exercise_html(statement_html, questions_data):
 </html>"""
     return html_out
 
-def run(course_id=COURSE_ID, output_base=BASE_DIR):
+def run(course_id=DEFAULT_COURSE_ID, output_base=DEFAULT_BASE_DIR):
     print(f"=== Starting All-Choices Exercise Scraper for Course {course_id} ===")
     os.makedirs(output_base, exist_ok=True)
 
@@ -247,7 +249,7 @@ def run(course_id=COURSE_ID, output_base=BASE_DIR):
         except Exception as e:
             print(f"  Error fetching chapter {chap_id}: {e}")
 
-    # 3. Playwrightインスタンスを起動して各問題のHTMLを完全レンダリングして保存
+    # 3. Playwrightで各問題のHTMLを完全レンダリングして保存
     total_saved = 0
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -266,8 +268,6 @@ def run(course_id=COURSE_ID, output_base=BASE_DIR):
             for ex_idx, ex in enumerate(exercises, 1):
                 ex_id = ex.get("id")
                 ex_title = clean_filename(ex.get("title") or "確認テスト")
-                
-                # Fetch result page HTML directly
                 ex_url = f"https://www.nnn.ed.nico/contents/courses/{course_id}/chapters/{t['chap_id']}/exercises/{ex_id}/result?content_type=zen_univ"
 
                 try:
@@ -286,7 +286,6 @@ def run(course_id=COURSE_ID, output_base=BASE_DIR):
                     questions = []
                     q_elements = section.find_all('li', attrs={'data-type': 'normal'})
                     if not q_elements:
-                        # Fallback for alternative structures
                         q_elements = [section]
 
                     for q_li in q_elements:
@@ -313,10 +312,9 @@ def run(course_id=COURSE_ID, output_base=BASE_DIR):
                             'explanation_html': exp_html
                         })
 
-                    # Render to full card HTML
                     rendered_html = build_exercise_html(statement_html, questions)
                     page.set_content(rendered_html)
-                    page.wait_for_timeout(200)
+                    page.wait_for_timeout(150)
 
                     card = page.query_selector('.card-container')
                     q_filename = f"{ex_idx:02d}_{ex_title}.png"
@@ -335,11 +333,30 @@ def run(course_id=COURSE_ID, output_base=BASE_DIR):
 
         browser.close()
 
+    # 4. 全問統合フォルダへの自動一括集約コピー
+    consolidated_dir = os.path.join(output_base, "【確認テスト・演習まとめ】")
+    os.makedirs(consolidated_dir, exist_ok=True)
+    chapter_dirs = sorted([d for d in os.listdir(output_base) if os.path.isdir(os.path.join(output_base, d)) and re.match(r'^\d+', d)])
+    consolidated_count = 0
+
+    for chap in chapter_dirs:
+        m = re.match(r'^(\d+)', chap)
+        chap_num = int(m.group(1)) if m else 0
+        chap_ex_dir = os.path.join(output_base, chap, "exercises")
+        if os.path.exists(chap_ex_dir):
+            for p in sorted(glob.glob(os.path.join(chap_ex_dir, "*.png"))):
+                fname = os.path.basename(p)
+                new_fname = f"第{chap_num:02d}章_{fname}"
+                target_path = os.path.join(consolidated_dir, new_fname)
+                shutil.copy2(p, target_path)
+                consolidated_count += 1
+
     print(f"\n==========================================")
-    print(f" COMPLETED! Total {total_saved} exercise screenshots saved with all choices.")
-    print(f" Target Folder: {output_base}")
+    print(f" COMPLETED! Total {total_saved} exercise screenshots saved.")
+    print(f" Consolidated {consolidated_count} images into: {consolidated_dir}")
     print(f"==========================================")
 
 if __name__ == "__main__":
-    course = sys.argv[1] if len(sys.argv) > 1 else COURSE_ID
-    run(course)
+    course = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_COURSE_ID
+    output = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_BASE_DIR
+    run(course, output)
