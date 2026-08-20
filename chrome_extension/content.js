@@ -1,12 +1,17 @@
-// ZEN Study Downloader Content Script v1.0.0
-// 完全同期キャプチャ ＆ スライド順序保証 ＆ 授業・動画番号付き命名 ＆ フォルダ名完全統一
+// ZEN Study Downloader + Slide Images & Exercises Content Script v7.0
+// 動画・スライド・確認テスト（解答解説付きスクショ）の全自動一括保存
 (function () {
   'use strict';
-  console.log("[ZEN Downloader v1.0.0] Content script initialized.");
+  console.log("[ZEN Downloader + Images & Exercises v7.0] Content script initialized.");
 
   const LOCAL_SERVER = "http://localhost:5000/download";
   let isProcessing = false;
   let myTabId = -1;
+
+  function clean_filename(text) {
+    if (!text) return "";
+    return text.replace(/[\\/*?:"<>|]/g, '_').trim();
+  }
 
   // 章タイトルの整形（01. 01. 等の重複数字や第1章などのプレフィックスを完全整理）
   function formatChapterTitle(rawTitle, fallbackIndex) {
@@ -36,8 +41,12 @@
 
   function getPageInfo() {
     const pathname = location.pathname;
+    const exerciseMatch = pathname.match(/\/courses\/(\d+)\/chapters\/(\d+)\/exercise\/(\d+)/);
+    if (exerciseMatch) return { type: "exercise", courseId: exerciseMatch[1], chapterId: exerciseMatch[2], exerciseId: exerciseMatch[3] };
+
     const chapterMatch = pathname.match(/\/courses\/(\d+)\/chapters\/(\d+)/);
     if (chapterMatch) return { type: "chapter", courseId: chapterMatch[1], chapterId: chapterMatch[2] };
+
     const courseMatch = pathname.match(/\/courses\/(\d+)/);
     if (courseMatch) return { type: "course", courseId: courseMatch[1] };
     return null;
@@ -79,8 +88,22 @@
     const data = await res.json();
     const sections = data.chapter?.sections || [];
     const chapterTitle = data.chapter?.title || "";
-    const movies = sections.filter((s) => s.resource_type === "movie").map((s, idx) => ({ index: idx + 1, title: s.title, contentUrl: s.content_url, movieId: s.id }));
-    return { chapterTitle, movies };
+
+    const movies = sections.filter((s) => s.resource_type === "movie").map((s, idx) => ({
+      index: idx + 1,
+      title: s.title,
+      contentUrl: s.content_url,
+      movieId: s.id
+    }));
+
+    const exercises = sections.filter((s) => s.resource_type === "exercise" || s.resource_type === "eval_test" || s.resource_type === "test").map((s, idx) => ({
+      index: idx + 1,
+      title: s.title || "確認テスト",
+      contentUrl: s.content_url,
+      exerciseId: s.id
+    }));
+
+    return { chapterTitle, movies, exercises };
   }
 
   async function initTabId() {
@@ -105,6 +128,7 @@
     });
   }
 
+  // 動画リソースとスライド画像の同期抽出
   async function inspectMovieResources(item) {
     await clearCapturedDataInBackground();
 
@@ -133,7 +157,7 @@
         const elapsed = Date.now() - startTime;
         const stableDuration = Date.now() - stableCountSince;
 
-        if (captured.m3u8 && ( (slideCount > 0 && stableDuration >= 1200) || elapsed >= 4500 )) {
+        if (captured.m3u8 && ((slideCount > 0 && stableDuration >= 1200) || elapsed >= 4500)) {
           finish(captured);
           return;
         }
@@ -157,8 +181,176 @@
     });
   }
 
+  // 確認テスト（Exercise）のDOMをレンダリングし、問題ごとの高画質スクショを生成
+  async function captureExerciseScreenshots(exerciseItem) {
+    return new Promise((resolve) => {
+      let resolved = false;
+
+      const iframe = document.createElement("iframe");
+      iframe.style.cssText = "position:fixed;bottom:0;right:0;width:1080px;height:900px;opacity:0.01;pointer-events:none;border:none;z-index:-9999;";
+      iframe.src = exerciseItem.contentUrl;
+
+      const startTime = Date.now();
+
+      const checkInterval = setInterval(async () => {
+        if (resolved) return;
+
+        try {
+          const ifrDoc = iframe.contentDocument || iframe.contentWindow.document;
+          if (!ifrDoc || !ifrDoc.body) return;
+
+          const textContent = ifrDoc.body.innerText || "";
+          const hasChoices = textContent.includes("【選択肢】") || textContent.includes("解答：") || textContent.includes("解説") || ifrDoc.querySelector('input[type="radio"], input[type="checkbox"]');
+
+          if (hasChoices || (Date.now() - startTime >= 4000)) {
+            clearInterval(checkInterval);
+            await new Promise((r) => setTimeout(r, 1200));
+
+            const capturedList = [];
+
+            // 1. 各問題カード（Question Card）を検索
+            let questionCards = Array.from(ifrDoc.querySelectorAll('section, div'))
+              .filter((el) => {
+                const text = el.innerText || "";
+                return (text.includes("【選択肢】") || text.includes("解答：")) && el.offsetHeight > 120 && el.offsetWidth > 400;
+              });
+
+            // 親コンテナを除外して末端のカードのみ抽出
+            questionCards = questionCards.filter((card) => {
+              return !questionCards.some((other) => other !== card && card.contains(other));
+            });
+
+            if (questionCards.length > 0 && typeof html2canvas !== "undefined") {
+              for (let qIdx = 0; qIdx < questionCards.length; qIdx++) {
+                const card = questionCards[qIdx];
+                try {
+                  const canvas = await html2canvas(card, {
+                    scale: 2,
+                    useCORS: true,
+                    logging: false,
+                    backgroundColor: "#ffffff"
+                  });
+                  const dataUrl = canvas.toDataURL("image/png");
+                  const qNum = String(qIdx + 1).padStart(2, '0');
+                  capturedList.push({
+                    filename: `${String(exerciseItem.index).padStart(2, '0')}_${clean_filename(exerciseItem.title)}_問${qNum}.png`,
+                    image_base64: dataUrl
+                  });
+                } catch (e) {
+                  console.error("html2canvas card error:", e);
+                }
+              }
+            } else if (typeof html2canvas !== "undefined") {
+              // フォールバック: メイン全体をキャプチャ
+              const targetEl = ifrDoc.querySelector('main, article, #root') || ifrDoc.body;
+              try {
+                const canvas = await html2canvas(targetEl, {
+                  scale: 2,
+                  useCORS: true,
+                  logging: false,
+                  backgroundColor: "#ffffff"
+                });
+                const dataUrl = canvas.toDataURL("image/png");
+                capturedList.push({
+                  filename: `${String(exerciseItem.index).padStart(2, '0')}_${clean_filename(exerciseItem.title)}_全問.png`,
+                  image_base64: dataUrl
+                });
+              } catch (e) {
+                console.error("html2canvas body error:", e);
+              }
+            }
+
+            resolved = true;
+            try { iframe.remove(); } catch (e) {}
+            resolve(capturedList);
+          }
+        } catch (e) {}
+      }, 400);
+
+      setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          clearInterval(checkInterval);
+          try { iframe.remove(); } catch (e) {}
+          resolve([]);
+        }
+      }, 9000);
+
+      document.body.appendChild(iframe);
+    });
+  }
+
   // -----------------------------------------------------------
-  // モード1: スライド画像だけを一括ダウンロード（授業単位）
+  // モード1: 確認テストだけを一括画像保存（全15章）
+  // -----------------------------------------------------------
+  async function runExercisesOnlyBatch(courseId, btn) {
+    chrome.storage.local.set({ batchInProgress: true });
+    btn.innerHTML = `<span>⏳</span><span>確認テスト解析中...</span>`;
+
+    await initTabId();
+    const csrfToken = await getCsrfToken();
+    const chapters = await getCourseChapters(courseId, csrfToken);
+
+    if (!chapters || chapters.length === 0) {
+      alert("チャプターを取得できませんでした。");
+      isProcessing = false;
+      return;
+    }
+
+    const totalChapters = chapters.length;
+    let grandTotalTests = 0;
+
+    for (let chapIdx = 0; chapIdx < totalChapters; chapIdx++) {
+      const chap = chapters[chapIdx];
+      const chapNum = chapIdx + 1;
+
+      let chapterTitle = "", exercises = [];
+      try {
+        const data = await fetchChapterDetails(courseId, chap.chapterId, csrfToken);
+        const rawTitle = data.chapterTitle || chap.title || "";
+        chapterTitle = formatChapterTitle(rawTitle, chapNum);
+        exercises = data.exercises || [];
+      } catch (e) {}
+
+      const chapterExerciseImages = [];
+      if (exercises.length > 0) {
+        for (let exIdx = 0; exIdx < exercises.length; exIdx++) {
+          const exItem = exercises[exIdx];
+          btn.innerHTML = `<span>⏳</span><span>[章 ${chapNum}/${totalChapters}] [テスト ${exItem.index}/${exercises.length}] スクショ撮影中...</span>`;
+          const screenshots = await captureExerciseScreenshots(exItem);
+          chapterExerciseImages.push(...screenshots);
+        }
+      }
+
+      if (chapterExerciseImages.length > 0) {
+        grandTotalTests += chapterExerciseImages.length;
+        await new Promise((resDone) => {
+          chrome.storage.local.get(["downloadFolder"], async (settings) => {
+            const payload = {
+              type: "exercises_batch",
+              chapter_title: chapterTitle,
+              exercise_images: chapterExerciseImages,
+              download_folder: settings.downloadFolder || ""
+            };
+            try {
+              await fetch(LOCAL_SERVER, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+            } catch (e) {
+              alert("ZEN Downloader サーバーが起動していません。ZEN_Downloader.exe を起動してください。");
+            }
+            resDone();
+          });
+        });
+      }
+    }
+
+    btn.style.opacity = "1";
+    btn.innerHTML = `<span style="font-size:16px;">🎉</span><span>全${totalChapters}章 (${grandTotalTests}問) のテスト画像保存完了！</span>`;
+    chrome.storage.local.set({ batchInProgress: false });
+    setTimeout(() => { isProcessing = false; renderButtons(); }, 8000);
+  }
+
+  // -----------------------------------------------------------
+  // モード2: スライド画像だけを一括ダウンロード（全15章）
   // -----------------------------------------------------------
   async function runSlidesOnlyBatch(courseId, btn) {
     chrome.storage.local.set({ batchInProgress: true });
@@ -219,9 +411,7 @@
             };
             try {
               await fetch(LOCAL_SERVER, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-            } catch (e) {
-              alert("ZEN Downloader サーバーが起動していません。ZEN_Downloader.exe を起動してください。");
-            }
+            } catch (e) {}
             resDone();
           });
         });
@@ -235,7 +425,7 @@
   }
 
   // -----------------------------------------------------------
-  // モード2: 全コース（動画 ＋ スライド画像）を一括ダウンロード
+  // モード3: 全コース（動画 ＋ スライド ＋ 確認テスト）を完全一括保存
   // -----------------------------------------------------------
   async function runFullCourseBatch(courseId, btn) {
     chrome.storage.local.set({ batchInProgress: true });
@@ -257,19 +447,21 @@
       const chap = chapters[chapIdx];
       const chapNum = chapIdx + 1;
 
-      let chapterTitle = "", movies = [];
+      let chapterTitle = "", movies = [], exercises = [];
       try {
         const data = await fetchChapterDetails(courseId, chap.chapterId, csrfToken);
         const rawTitle = data.chapterTitle || chap.title || "";
         chapterTitle = formatChapterTitle(rawTitle, chapNum);
         movies = data.movies || [];
+        exercises = data.exercises || [];
       } catch (e) {}
 
+      // 1. 動画＆スライドの保存
       if (movies.length > 0) {
         const totalMovies = movies.length;
         for (let mIdx = 0; mIdx < totalMovies; mIdx++) {
           const item = movies[mIdx];
-          btn.innerHTML = `<span>⏳</span><span>[章 ${chapNum}/${totalChapters}] [${item.index}/${totalMovies}] 抽出中...</span>`;
+          btn.innerHTML = `<span>⏳</span><span>[章 ${chapNum}/${totalChapters}] [動画 ${item.index}/${totalMovies}] 処理中...</span>`;
 
           const res = await inspectMovieResources(item);
           const formattedSlides = (res.images || []).map((imgUrl, sIdx) => ({
@@ -295,110 +487,124 @@
                 };
                 try {
                   await fetch(LOCAL_SERVER, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-                } catch (e) {
-                  alert("ZEN Downloader サーバーが起動していません。ZEN_Downloader.exe を起動してください。");
-                }
+                } catch (e) {}
                 resDone();
               });
             });
           }
         }
       }
-    }
 
-    btn.style.opacity = "1";
-    btn.innerHTML = `<span style="font-size:16px;">🎉</span><span>全${totalChapters}章 (動画＋画像) 送信完了！</span>`;
-    chrome.storage.local.set({ batchInProgress: false });
-    setTimeout(() => { isProcessing = false; renderButtons(); }, 8000);
-  }
+      // 2. 確認テストの画像保存
+      if (exercises.length > 0) {
+        const chapterExerciseImages = [];
+        for (let exIdx = 0; exIdx < exercises.length; exIdx++) {
+          const exItem = exercises[exIdx];
+          btn.innerHTML = `<span>⏳</span><span>[章 ${chapNum}/${totalChapters}] [テスト ${exItem.index}/${exercises.length}] スクショ撮影中...</span>`;
+          const screenshots = await captureExerciseScreenshots(exItem);
+          chapterExerciseImages.push(...screenshots);
+        }
 
-  // -----------------------------------------------------------
-  // モード3: 単一章の動画を一括ダウンロード
-  // -----------------------------------------------------------
-  async function runSingleChapterBatch(courseId, chapterId, btn) {
-    chrome.storage.local.set({ batchInProgress: true });
-    btn.innerHTML = `<span>⏳</span><span>この章の解析中...</span>`;
-
-    await initTabId();
-    const csrfToken = await getCsrfToken();
-
-    let chapterTitle = "", movies = [];
-    try {
-      const data = await fetchChapterDetails(courseId, chapterId, csrfToken);
-      const rawTitle = data.chapterTitle || "";
-      chapterTitle = formatChapterTitle(rawTitle, 1);
-      movies = data.movies || [];
-    } catch (e) {
-      alert("章データの取得に失敗しました。");
-      isProcessing = false;
-      return;
-    }
-
-    if (movies.length === 0) {
-      alert("動画が見つかりませんでした。");
-      isProcessing = false;
-      return;
-    }
-
-    const totalMovies = movies.length;
-    for (let mIdx = 0; mIdx < totalMovies; mIdx++) {
-      const item = movies[mIdx];
-      btn.innerHTML = `<span>⏳</span><span>[${item.index}/${totalMovies}] 抽出中...</span>`;
-
-      const res = await inspectMovieResources(item);
-      const formattedSlides = (res.images || []).map((imgUrl, sIdx) => ({
-        url: imgUrl,
-        movie_index: item.index,
-        movie_title: item.title,
-        slide_index: sIdx + 1
-      }));
-
-      if (res.m3u8Url || formattedSlides.length > 0) {
-        await new Promise((resDone) => {
-          chrome.storage.local.get(["quality", "downloadFolder"], async (settings) => {
-            const payload = {
-              type: "video",
-              url: res.m3u8Url,
-              title: item.title,
-              chapter_title: chapterTitle,
-              index: item.index,
-              total: totalMovies,
-              quality: settings.quality || "best",
-              download_folder: settings.downloadFolder || "",
-              slide_images: formattedSlides
-            };
-            try {
-              await fetch(LOCAL_SERVER, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-            } catch (e) {
-              alert("ZEN Downloader サーバーが起動していません。ZEN_Downloader.exe を起動してください。");
-            }
-            resDone();
+        if (chapterExerciseImages.length > 0) {
+          await new Promise((resDone) => {
+            chrome.storage.local.get(["downloadFolder"], async (settings) => {
+              const payload = {
+                type: "exercises_batch",
+                chapter_title: chapterTitle,
+                exercise_images: chapterExerciseImages,
+                download_folder: settings.downloadFolder || ""
+              };
+              try {
+                await fetch(LOCAL_SERVER, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+              } catch (e) {}
+              resDone();
+            });
           });
-        });
+        }
       }
     }
 
     btn.style.opacity = "1";
-    btn.innerHTML = `<span style="font-size:16px;">🎉</span><span>全${totalMovies}本の送信完了！</span>`;
+    btn.innerHTML = `<span style="font-size:16px;">🎉</span><span>全${totalChapters}章 (動画＋画像＋テスト) 送信完了！</span>`;
     chrome.storage.local.set({ batchInProgress: false });
-    setTimeout(() => { isProcessing = false; renderButtons(); }, 6000);
+    setTimeout(() => { isProcessing = false; renderButtons(); }, 8000);
+  }
+
+  // 単一の確認テストページで即座に保存
+  async function runSingleExerciseSave(btn) {
+    btn.innerHTML = `<span>⏳</span><span>スクショ撮影中...</span>`;
+    const targetEl = document.querySelector('main, article, #root') || document.body;
+    if (typeof html2canvas !== "undefined") {
+      try {
+        const canvas = await html2canvas(targetEl, {
+          scale: 2,
+          useCORS: true,
+          logging: false,
+          backgroundColor: "#ffffff"
+        });
+        const dataUrl = canvas.toDataURL("image/png");
+        const pageInfo = getPageInfo();
+        const csrfToken = await getCsrfToken();
+        let chapterTitle = "確認テスト";
+        try {
+          const data = await fetchChapterDetails(pageInfo.courseId, pageInfo.chapterId, csrfToken);
+          chapterTitle = formatChapterTitle(data.chapterTitle, 1);
+        } catch (e) {}
+
+        const payload = {
+          type: "exercises_batch",
+          chapter_title: chapterTitle,
+          exercise_images: [{ filename: `確認テスト_${pageInfo.exerciseId}.png`, image_base64: dataUrl }],
+          download_folder: ""
+        };
+        await fetch(LOCAL_SERVER, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+        btn.innerHTML = `<span>🎉</span><span>確認テストの画像を保存しました！</span>`;
+        setTimeout(() => { renderButtons(); }, 4000);
+      } catch (e) {
+        alert("キャプチャに失敗しました。");
+        renderButtons();
+      }
+    }
   }
 
   function renderButtons() {
-    const existing = document.getElementById("zen-downloader-tools-container");
+    const existing = document.getElementById("zen-image-tools-container");
     if (existing) existing.remove();
 
     const pageInfo = getPageInfo();
     if (!pageInfo) return;
 
     const container = document.createElement("div");
-    container.id = "zen-downloader-tools-container";
+    container.id = "zen-image-tools-container";
     Object.assign(container.style, {
       position: "fixed", bottom: "24px", right: "24px", zIndex: "999999",
       display: "flex", flexDirection: "column", gap: "10px", alignItems: "flex-end"
     });
 
     if (pageInfo.type === "course") {
+      // 1. 全15章（動画＋スライド＋確認テスト）を一括保存
+      const allInOneBtn = document.createElement("button");
+      allInOneBtn.id = "zen-all-in-one-btn";
+      allInOneBtn.innerHTML = `<span>⚡</span><span>全15章（動画＋スライド＋テスト）を一括保存</span>`;
+      styleButton(allInOneBtn, "rgba(88, 28, 135, 0.95)", "#e9d5ff", "rgba(192, 132, 252, 0.6)");
+      allInOneBtn.addEventListener("click", () => {
+        if (isProcessing) return;
+        isProcessing = true;
+        runFullCourseBatch(pageInfo.courseId, allInOneBtn);
+      });
+
+      // 2. 確認テストだけ一括画像保存
+      const testsBtn = document.createElement("button");
+      testsBtn.id = "zen-tests-only-btn";
+      testsBtn.innerHTML = `<span>📝</span><span>確認テストだけ一括画像保存</span>`;
+      styleButton(testsBtn, "rgba(13, 148, 136, 0.95)", "#ccfbf1", "rgba(45, 212, 191, 0.6)");
+      testsBtn.addEventListener("click", () => {
+        if (isProcessing) return;
+        isProcessing = true;
+        runExercisesOnlyBatch(pageInfo.courseId, testsBtn);
+      });
+
+      // 3. スライド画像だけ一括ダウンロード
       const slidesBtn = document.createElement("button");
       slidesBtn.id = "zen-slides-only-btn";
       slidesBtn.innerHTML = `<span>🖼️</span><span>スライド画像だけ一括ダウンロード</span>`;
@@ -409,30 +615,18 @@
         runSlidesOnlyBatch(pageInfo.courseId, slidesBtn);
       });
 
-      const bothBtn = document.createElement("button");
-      bothBtn.id = "zen-both-btn";
-      bothBtn.innerHTML = `<span>🔥</span><span>全15章（動画＋スライド）を一括ダウンロード</span>`;
-      styleButton(bothBtn, "rgba(88, 28, 135, 0.92)", "#e9d5ff", "rgba(192, 132, 252, 0.5)");
-      bothBtn.addEventListener("click", () => {
-        if (isProcessing) return;
-        isProcessing = true;
-        runFullCourseBatch(pageInfo.courseId, bothBtn);
-      });
-
+      container.appendChild(allInOneBtn);
+      container.appendChild(testsBtn);
       container.appendChild(slidesBtn);
-      container.appendChild(bothBtn);
-    } else {
-      const chapterBtn = document.createElement("button");
-      chapterBtn.id = "zen-chapter-btn";
-      chapterBtn.innerHTML = `<span>📥</span><span>この章の動画を一括ダウンロード</span>`;
-      styleButton(chapterBtn, "rgba(15, 23, 42, 0.92)", "#38bdf8", "rgba(56, 189, 248, 0.5)");
-      chapterBtn.addEventListener("click", () => {
-        if (isProcessing) return;
-        isProcessing = true;
-        runSingleChapterBatch(pageInfo.courseId, pageInfo.chapterId, chapterBtn);
+    } else if (pageInfo.type === "exercise") {
+      const singleExBtn = document.createElement("button");
+      singleExBtn.id = "zen-single-ex-btn";
+      singleExBtn.innerHTML = `<span>📝</span><span>この確認テストを画像保存</span>`;
+      styleButton(singleExBtn, "rgba(13, 148, 136, 0.95)", "#ccfbf1", "rgba(45, 212, 191, 0.6)");
+      singleExBtn.addEventListener("click", () => {
+        runSingleExerciseSave(singleExBtn);
       });
-
-      container.appendChild(chapterBtn);
+      container.appendChild(singleExBtn);
     }
 
     document.body.appendChild(container);
@@ -449,7 +643,7 @@
   }
 
   const observer = new MutationObserver(() => {
-    if (!document.getElementById("zen-downloader-tools-container")) renderButtons();
+    if (!document.getElementById("zen-image-tools-container")) renderButtons();
   });
   if (document.body) {
     renderButtons();

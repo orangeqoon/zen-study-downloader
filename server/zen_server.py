@@ -192,7 +192,35 @@ def run_download(data):
             safe_print(f"Slides batch complete for '{chapter_title}': {count}/{len(images)} saved in {slides_dir}")
             return
 
-        # CASE 2: Video Download
+        # CASE 2: Exercise Screenshots Batch
+        if req_type == "exercises_batch" or data.get("exercise_images"):
+            exercises_dir = os.path.join(target_chapter_dir, "exercises")
+            os.makedirs(exercises_dir, exist_ok=True)
+            exercise_images = data.get("exercise_images", [])
+            saved_count = 0
+            import base64
+            for item in exercise_images:
+                try:
+                    filename = clean_filename(item.get("filename", "exercise.png"))
+                    if not filename.endswith(".png") and not filename.endswith(".jpg"):
+                        filename += ".png"
+                    save_path = os.path.join(exercises_dir, filename)
+                    b64_data = item.get("image_base64", "")
+                    if "," in b64_data:
+                        b64_data = b64_data.split(",", 1)[1]
+                    img_bytes = base64.b64decode(b64_data)
+                    with open(save_path, "wb") as f:
+                        f.write(img_bytes)
+                    saved_count += 1
+                    safe_print(f"Saved exercise screenshot: {save_path} ({len(img_bytes)/1024:.1f} KB)")
+                except Exception as e:
+                    safe_print(f"Error saving exercise image: {e}")
+
+            show_notification("ZEN Exercise Downloader", f"完了: {chapter_title} (確認テスト {saved_count}枚保存)")
+            safe_print(f"Exercises batch complete for '{chapter_title}': {saved_count}/{len(exercise_images)} saved in {exercises_dir}")
+            return
+
+        # CASE 3: Video Download
         video_url = data.get("url")
         if not video_url:
             return
