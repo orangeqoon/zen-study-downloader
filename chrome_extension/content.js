@@ -85,6 +85,35 @@
     return Array.from(chapterMap.values());
   }
 
+  async function getCourseTitle(courseId, csrfToken) {
+    // 1. Try DOM breadcrumb or header
+    try {
+      const breadcrumb = document.querySelector('nav, [class*="breadcrumb"], header');
+      if (breadcrumb) {
+        const text = breadcrumb.innerText || "";
+        const m = text.match(/([^\n\>]+)(?:\s*[\:\：]\s*オンデマンド|\s*\>\s*第|\s*\>\s*\d+)/);
+        if (m && m[1].trim()) return clean_filename(m[1].trim().replace(/[:：]\s*オンデマンド.*$/, ''));
+      }
+      const h1 = document.querySelector('h1');
+      if (h1 && h1.innerText) {
+        return clean_filename(h1.innerText.replace(/[:：]\s*オンデマンド.*$/, '').trim());
+      }
+    } catch (e) {}
+
+    // 2. Try API
+    try {
+      const res = await fetch(`https://api.nnn.ed.nico/v2/material/courses/${courseId}?revision=1`, { credentials: "include", headers: csrfToken ? { "X-CSRF-Token": csrfToken } : {} });
+      if (res.ok) {
+        const data = await res.json();
+        const rawTitle = data.course?.title || "";
+        if (rawTitle) {
+          return clean_filename(rawTitle.replace(/[:：]\s*オンデマンド.*$/, '').trim());
+        }
+      }
+    } catch (e) {}
+    return "ZEN_Course";
+  }
+
   async function getCourseChapters(courseId, csrfToken) {
     let chapters = extractChaptersFromDOM(courseId);
     if (chapters.length > 0) return chapters;
@@ -338,10 +367,12 @@
     await syncSessionToLocalServer();
     btn.innerHTML = `<span>🚀</span><span>全自動ブラウザ操作中...</span>`;
     try {
+      const csrfToken = await getCsrfToken();
+      const courseTitle = await getCourseTitle(courseId, csrfToken);
       const res = await fetch(`${LOCAL_SERVER}/run_exercises_scraper`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ course_id: courseId })
+        body: JSON.stringify({ course_id: courseId, course_title: courseTitle })
       });
       if (res.ok) {
         btn.innerHTML = `<span>🎉</span><span>確認テストの自動収集を開始しました！（画面通知が出ます）</span>`;
@@ -365,6 +396,7 @@
 
     await initTabId();
     const csrfToken = await getCsrfToken();
+    const courseTitle = await getCourseTitle(courseId, csrfToken);
     const chapters = await getCourseChapters(courseId, csrfToken);
 
     if (!chapters || chapters.length === 0) {
@@ -412,6 +444,7 @@
           chrome.storage.local.get(["downloadFolder"], async (settings) => {
             const payload = {
               type: "slides_only",
+              course_title: courseTitle,
               chapter_title: chapterTitle,
               images: chapterSlidesList,
               download_folder: settings.downloadFolder || ""
@@ -440,6 +473,7 @@
 
     await initTabId();
     const csrfToken = await getCsrfToken();
+    const courseTitle = await getCourseTitle(courseId, csrfToken);
     const chapters = await getCourseChapters(courseId, csrfToken);
 
     if (!chapters || chapters.length === 0) {
@@ -483,6 +517,7 @@
                   type: "video",
                   url: res.m3u8Url,
                   title: item.title,
+                  course_title: courseTitle,
                   chapter_title: chapterTitle,
                   index: item.index,
                   total: totalMovies,
