@@ -1,5 +1,5 @@
-// ZEN Study Downloader Background Worker v1.0.0
-// インメモリ同期管理によるレースコンディション完全根絶 ＆ スライド順序・全件完全保証
+// ZEN Study Downloader Background Worker v7.2
+// インメモリ同期管理 ＆ ネイティブ画面キャプチャ（真っ白バグ完全解消）
 
 const tabDataStore = new Map();
 
@@ -34,6 +34,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     } else {
       sendResponse({ m3u8: null, slides: [], lastSlideTime: 0 });
     }
+    return true;
+  }
+
+  // ネイティブ画面キャプチャ（Blinkエンジンによる確実なピクセル取得）
+  if (msg.action === "CAPTURE_TAB_SCREENSHOT") {
+    const windowId = sender.tab ? sender.tab.windowId : null;
+    chrome.tabs.captureVisibleTab(windowId, { format: "png" }, (dataUrl) => {
+      if (chrome.runtime.lastError || !dataUrl) {
+        console.error("[ZEN Extension] Screenshot error:", chrome.runtime.lastError);
+        sendResponse({ dataUrl: null });
+      } else {
+        sendResponse({ dataUrl: dataUrl });
+      }
+    });
     return true;
   }
 
