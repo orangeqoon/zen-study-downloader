@@ -150,6 +150,37 @@ def build_exercise_html(statement_html, questions_data):
     background: #ffffff;
     color: #00ba66;
   }
+  .word-answer-box {
+    display: flex;
+    align-items: center;
+    padding: 14px 20px;
+    border-radius: 8px;
+    background-color: #00ba66;
+    border: 1.5px solid #00ba66;
+    color: #ffffff;
+    font-size: 16px;
+    font-weight: 700;
+    box-shadow: 0 4px 12px rgba(0, 186, 102, 0.22);
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+  .word-icon {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: #ffffff;
+    color: #00ba66;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+  .word-text {
+    font-size: 16px;
+    letter-spacing: 0.5px;
+  }
   .explanation-box {
     background-color: #fef9c3;
     border: 1.5px solid #fde047;
@@ -184,19 +215,28 @@ def build_exercise_html(statement_html, questions_data):
         html_out += f"""
     <div class="question-block">
       <div class="question-label">{html.escape(q['question_title'])}</div>
-      <ul class="choices-list">
 """
-        for val, c_text, is_corr in q['choices']:
-            corr_cls = "correct" if is_corr else ""
-            icon_content = "✓" if is_corr else str(val)
-            html_out += f"""        <li class="choice-item {corr_cls}">
+        if q.get('type') == 'word':
+            html_out += f"""
+      <div class="word-answer-box">
+        <span class="word-icon">✓</span>
+        <span class="word-text">{html.escape(q.get('correct_word', ''))}</span>
+      </div>
+"""
+        elif q.get('choices'):
+            html_out += """      <ul class="choices-list">
+"""
+            for val, c_text, is_corr in q['choices']:
+                corr_cls = "correct" if is_corr else ""
+                icon_content = "✓" if is_corr else str(val)
+                html_out += f"""        <li class="choice-item {corr_cls}">
           <span class="choice-icon">{icon_content}</span>
           <span class="choice-text">{html.escape(c_text)}</span>
         </li>
 """
-        html_out += """      </ul>
+            html_out += """      </ul>
 """
-        if q.get('explanation_html'):
+        if q.get('explanation_html') and q.get('explanation_html').strip():
             html_out += f"""      <div class="explanation-box">
         <div class="explanation-title">💡 解答・解説</div>
         <div class="explanation-content">{q['explanation_html']}</div>
@@ -285,33 +325,52 @@ def run(course_id=DEFAULT_COURSE_ID, output_base=DEFAULT_BASE_DIR):
                     statement_html = "".join(str(c) for c in statement_div.contents).strip() if statement_div else ""
 
                     questions = []
-                    q_elements = section.find_all('li', attrs={'data-type': 'normal'})
+                    q_elements = section.find_all('li', attrs={'data-type': True})
                     if not q_elements:
                         q_elements = [section]
 
                     for q_li in q_elements:
+                        q_type = q_li.get('data-type', 'normal')
                         q_title = q_li.find('div', class_='question')
-                        q_title_txt = q_title.get_text(strip=True) if q_title else '【選択肢】'
                         
-                        answers_ul = q_li.find('ul', class_='answers')
-                        choices = []
-                        if answers_ul:
-                            for idx_c, a_li in enumerate(answers_ul.find_all('li'), 1):
-                                val = a_li.get('data-input-value') or str(idx_c)
-                                is_corr = a_li.get('data-correct') == 'true'
-                                a_txt = a_li.get_text(strip=True)
-                                choices.append((val, a_txt, is_corr))
-                                
                         exp_div = q_li.find('div', class_='explanation')
+                        if not exp_div or not exp_div.get_text(strip=True):
+                            exp_div = section.find('div', class_='explanation')
+                        
                         exp_html = ""
                         if exp_div:
                             exp_html = "".join(str(c) for c in exp_div.contents).strip()
+
+                        if q_type == 'word' or q_li.find('input', class_='answers'):
+                            input_el = q_li.find('input', class_='answers') or q_li.find('input')
+                            correct_word = ""
+                            if input_el:
+                                correct_word = input_el.get('data-correct-answers') or input_el.get('value') or ""
                             
-                        questions.append({
-                            'question_title': q_title_txt,
-                            'choices': choices,
-                            'explanation_html': exp_html
-                        })
+                            q_title_txt = q_title.get_text(strip=True) if (q_title and q_title.get_text(strip=True)) else '【正解入力】'
+                            questions.append({
+                                'type': 'word',
+                                'question_title': q_title_txt,
+                                'correct_word': correct_word,
+                                'explanation_html': exp_html
+                            })
+                        else:
+                            q_title_txt = q_title.get_text(strip=True) if (q_title and q_title.get_text(strip=True)) else '【選択肢】'
+                            answers_ul = q_li.find('ul', class_='answers')
+                            choices = []
+                            if answers_ul:
+                                for idx_c, a_li in enumerate(answers_ul.find_all('li'), 1):
+                                    val = a_li.get('data-input-value') or str(idx_c)
+                                    is_corr = a_li.get('data-correct') == 'true'
+                                    a_txt = a_li.get_text(strip=True)
+                                    choices.append((val, a_txt, is_corr))
+                                    
+                            questions.append({
+                                'type': 'normal',
+                                'question_title': q_title_txt,
+                                'choices': choices,
+                                'explanation_html': exp_html
+                            })
 
                     rendered_html = build_exercise_html(statement_html, questions)
                     page.set_content(rendered_html)
