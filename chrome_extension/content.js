@@ -135,14 +135,39 @@
     const sections = data.chapter?.sections || [];
     const chapterTitle = data.chapter?.title || "";
 
-    const movies = sections.filter((s) => s.resource_type === "movie").map((s, idx) => ({
-      index: idx + 1,
-      title: s.title,
-      contentUrl: s.content_url,
-      movieId: s.id
-    }));
+    const movies = [];
+    let movieIdx = 1;
 
-    const exercises = sections.filter((s) => s.resource_type === "exercise" || s.resource_type === "eval_test" || s.resource_type === "test").map((s, idx) => ({
+    for (const s of sections) {
+      if (s.resource_type === "movie") {
+        movies.push({
+          index: movieIdx++,
+          title: s.title,
+          contentUrl: s.content_url,
+          movieId: s.id
+        });
+      } else if (s.resource_type === "lesson") {
+        try {
+          const lRes = await fetch(`https://api.nnn.ed.nico/v1/n_school/courses/${courseId}/chapters/${chapterId}/lessons/${s.id}?revision=1`, { credentials: "include", headers: csrfToken ? { "X-CSRF-Token": csrfToken } : {} });
+          if (lRes.ok) {
+            const lData = await lRes.json();
+            const hlsUrl = lData.lesson?.archive?.url?.hls;
+            if (hlsUrl) {
+              movies.push({
+                index: movieIdx++,
+                title: s.title,
+                contentUrl: hlsUrl,
+                directUrl: hlsUrl,
+                movieId: s.id,
+                isLiveArchive: true
+              });
+            }
+          }
+        } catch (e) {}
+      }
+    }
+
+    const exercises = sections.filter((s) => s.resource_type === "exercise" || s.resource_type === "eval_test" || s.resource_type === "test" || s.resource_type === "report").map((s, idx) => ({
       index: idx + 1,
       title: s.title || "確認テスト",
       contentUrl: s.content_url,
@@ -502,20 +527,28 @@
           const item = movies[mIdx];
           btn.innerHTML = `<span>⏳</span><span>[章 ${chapNum}/${totalChapters}] [動画 ${item.index}/${totalMovies}] 処理中...</span>`;
 
-          const res = await inspectMovieResources(item);
-          const formattedSlides = (res.images || []).map((imgUrl, sIdx) => ({
-            url: imgUrl,
-            movie_index: item.index,
-            movie_title: item.title,
-            slide_index: sIdx + 1
-          }));
+          let resM3u8 = item.directUrl || null;
+          let formattedSlides = [];
 
-          if (res.m3u8Url || formattedSlides.length > 0) {
+          if (item.isLiveArchive) {
+            resM3u8 = item.directUrl;
+          } else {
+            const res = await inspectMovieResources(item);
+            resM3u8 = res.m3u8Url;
+            formattedSlides = (res.images || []).map((imgUrl, sIdx) => ({
+              url: imgUrl,
+              movie_index: item.index,
+              movie_title: item.title,
+              slide_index: sIdx + 1
+            }));
+          }
+
+          if (resM3u8 || formattedSlides.length > 0) {
             await new Promise((resDone) => {
               chrome.storage.local.get(["quality", "downloadFolder"], async (settings) => {
                 const payload = {
                   type: "video",
-                  url: res.m3u8Url,
+                  url: resM3u8,
                   title: item.title,
                   course_title: courseTitle,
                   chapter_title: chapterTitle,
