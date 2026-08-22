@@ -43,11 +43,10 @@ def download_ts_segment(url, index, temp_dir, session, retries=3):
             time.sleep(1)
     return index, False
 
-def download_hls_fast(master_m3u8_url, output_path, max_workers=24):
-    print(f"  [FAST-HLS] Resolving stream for {os.path.basename(output_path)}...")
+def download_hls_fast(master_m3u8_url, output_path, target_resolution="270", max_workers=24):
+    print(f"  [FAST-HLS 270p] Resolving stream for {os.path.basename(output_path)}...")
     t0 = time.time()
     
-    # 1. Resolve child m3u8 (highest bandwidth)
     session = requests.Session()
     r = session.get(master_m3u8_url, timeout=15)
     if not r.ok:
@@ -61,17 +60,48 @@ def download_hls_fast(master_m3u8_url, output_path, max_workers=24):
     for i, l in enumerate(lines):
         if l.startswith('#EXT-X-STREAM-INF'):
             bw = int(re.search(r'BANDWIDTH=(\d+)', l).group(1)) if re.search(r'BANDWIDTH=(\d+)', l) else 0
+            res_match = re.search(r'RESOLUTION=(\d+)x(\d+)', l)
+            width = int(res_match.group(1)) if res_match else 0
+            height = int(res_match.group(2)) if res_match else 0
+            
             if i + 1 < len(lines):
                 uri = lines[i+1]
-                streams.append((bw, uri if uri.startswith('http') else f"{base_dir}/{uri}"))
+                full_uri = uri if uri.startswith('http') else f"{base_dir}/{uri}"
+                streams.append({
+                    'bandwidth': bw,
+                    'width': width,
+                    'height': height,
+                    'uri': full_uri
+                })
                 
     if streams:
-        streams.sort(key=lambda x: x[0], reverse=True)
-        child_m3u8_url = streams[0][1]
+        if str(target_resolution) in ["270", "270p", "lowest", "low"]:
+            # Pick lowest resolution / bandwidth (270p)
+            streams.sort(key=lambda x: (x['height'] if x['height'] > 0 else 9999, x['bandwidth']))
+            selected = streams[0]
+        elif str(target_resolution) in ["720", "720p", "best", "high"]:
+            streams.sort(key=lambda x: (x['height'], x['bandwidth']), reverse=True)
+            selected = streams[0]
+        else:
+            try:
+                target_h = int(re.sub(r'\D', '', str(target_resolution)))
+                suitable = [s for s in streams if s['height'] <= target_h]
+                if suitable:
+                    suitable.sort(key=lambda x: (x['height'], x['bandwidth']), reverse=True)
+                    selected = suitable[0]
+                else:
+                    streams.sort(key=lambda x: (x['height'], x['bandwidth']))
+                    selected = streams[0]
+            except Exception:
+                streams.sort(key=lambda x: (x['height'], x['bandwidth']))
+                selected = streams[0]
+                
+        child_m3u8_url = selected['uri']
+        print(f"  Selected stream resolution: {selected['width']}x{selected['height']} ({selected['bandwidth']//1000} kbps)")
     else:
         child_m3u8_url = master_m3u8_url
         
-    # 2. Fetch child playlist and extract all TS segment URLs
+    # Fetch child playlist and extract all TS segment URLs
     r_child = session.get(child_m3u8_url, timeout=15)
     if not r_child.ok:
         print(f"  Failed child playlist: {r_child.status_code}")
@@ -82,9 +112,9 @@ def download_hls_fast(master_m3u8_url, output_path, max_workers=24):
     ts_urls = [s if s.startswith('http') else f"{child_base}/{s}" for s in segment_lines]
     
     total_segs = len(ts_urls)
-    print(f"  [FAST-HLS] Found {total_segs} segments (~{total_segs*3/60:.1f} mins). Starting parallel download ({max_workers} threads)...")
+    print(f"  [FAST-HLS 270p] Found {total_segs} segments (~{total_segs*3/60:.1f} mins). Starting parallel download ({max_workers} threads)...")
     
-    # 3. Download segments in parallel to temp directory
+    # Download segments in parallel to temp directory
     with tempfile.TemporaryDirectory(dir=r"C:\scripts") as temp_dir:
         done_count = 0
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -97,8 +127,8 @@ def download_hls_fast(master_m3u8_url, output_path, max_workers=24):
                 if done_count % 300 == 0 or done_count == total_segs:
                     print(f"    Progress: {done_count}/{total_segs} ({done_count/total_segs*100:.1f}%)")
                     
-        # 4. Merge TS segments with ffmpeg into mp4
-        print(f"  [FAST-HLS] Merging {total_segs} segments into MP4...")
+        # Merge TS segments with ffmpeg into mp4
+        print(f"  [FAST-HLS 270p] Merging {total_segs} segments into MP4...")
         concat_list_path = os.path.join(temp_dir, "concat.txt")
         with open(concat_list_path, 'w', encoding='utf-8') as f:
             for idx in range(total_segs):
@@ -114,17 +144,17 @@ def download_hls_fast(master_m3u8_url, output_path, max_workers=24):
             output_path
         ]
         p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace')
-        if p.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 100000:
+        if p.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 10000:
             t1 = time.time()
             size_mb = os.path.getsize(output_path) / (1024 * 1024)
-            print(f"  [SUCCESS] {os.path.basename(output_path)} ({size_mb:.1f} MB) in {t1-t0:.1f}s!\n")
+            print(f"  [SUCCESS] 270p MP4 saved: {os.path.basename(output_path)} ({size_mb:.1f} MB) in {t1-t0:.1f}s!\n")
             return True
         else:
             print(f"  [ERROR] Concat failed with code {p.returncode}: {p.stderr[-500:]}\n")
             return False
 
-def run(course_id="88092284", output_base=r"D:\ZEN大学関係\大学動画\クリエイティブの現場から"):
-    print(f"=== Starting Fast Live Video Downloader for Course {course_id} ===")
+def run(course_id="88092284", output_base=r"D:\ZEN大学関係\大学動画\クリエイティブの現場から", target_resolution="270"):
+    print(f"=== Starting Fast Live Video Downloader for Course {course_id} (Target: {target_resolution}p) ===")
     os.makedirs(output_base, exist_ok=True)
     
     cookie_jar = get_firefox_cookies()
@@ -157,7 +187,6 @@ def run(course_id="88092284", output_base=r"D:\ZEN大学関係\大学動画\ク�
                 
             sections = r_c.json().get("chapter", {}).get("sections", [])
             lesson_sections = [s for s in sections if s.get("resource_type") == "lesson"]
-            movie_sections = [s for s in sections if s.get("resource_type") == "movie"]
             
             for l_idx, s in enumerate(lesson_sections, 1):
                 lesson_id = str(s.get("id"))
@@ -165,9 +194,19 @@ def run(course_id="88092284", output_base=r"D:\ZEN大学関係\大学動画\ク�
                 out_filename = f"{l_idx:02d}_{l_title}.mp4"
                 out_path = os.path.join(chap_dir, out_filename)
                 
-                if os.path.exists(out_path) and os.path.getsize(out_path) > 50000000:
-                    print(f"  [SKIP] Already exists ({os.path.getsize(out_path)/(1024*1024):.1f} MB): {out_filename}\n")
-                    continue
+                # Check if file is already 270p (check video height with ffprobe)
+                if os.path.exists(out_path) and os.path.getsize(out_path) > 10000:
+                    try:
+                        probe_cmd = ['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=height', '-of', 'csv=s=x:p=0', out_path]
+                        pr = subprocess.run(probe_cmd, capture_output=True, text=True)
+                        h = int(pr.stdout.strip()) if pr.stdout.strip().isdigit() else 0
+                        if h == 270 or h == int(target_resolution):
+                            print(f"  [SKIP] Already {h}p ({os.path.getsize(out_path)/(1024*1024):.1f} MB): {out_filename}\n")
+                            continue
+                        else:
+                            print(f"  Replacing {h}p video with {target_resolution}p version...")
+                    except Exception:
+                        pass
                     
                 lesson_api = f"https://api.nnn.ed.nico/v1/n_school/courses/{course_id}/chapters/{chap_id}/lessons/{lesson_id}?revision=1"
                 r_l = requests.get(lesson_api, cookies=cookie_jar, timeout=20)
@@ -181,17 +220,18 @@ def run(course_id="88092284", output_base=r"D:\ZEN大学関係\大学動画\ク�
                     print(f"  No HLS archive URL found for lesson {lesson_id}")
                     continue
                     
-                download_hls_fast(hls_url, out_path, max_workers=24)
+                download_hls_fast(hls_url, out_path, target_resolution=target_resolution, max_workers=24)
                 
         except Exception as e:
             print(f"  Error processing chapter {chap_id}: {e}")
 
     print("\n==========================================")
-    print(" ALL LIVE LESSON VIDEOS DOWNLOADED SUCCESSFULLY!")
+    print(f" ALL LIVE LESSON VIDEOS DOWNLOADED AT {target_resolution}p SUCCESSFULLY!")
     print(f" Saved to: {output_base}")
     print("==========================================")
 
 if __name__ == "__main__":
     cid = sys.argv[1] if len(sys.argv) > 1 else "88092284"
     out_dir = sys.argv[2] if len(sys.argv) > 2 else r"D:\ZEN大学関係\大学動画\クリエイティブの現場から"
-    run(cid, out_dir)
+    res = sys.argv[3] if len(sys.argv) > 3 else "270"
+    run(cid, out_dir, res)
