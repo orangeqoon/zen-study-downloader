@@ -31,8 +31,9 @@ def format_chapter_title(raw_title, fallback_index=1):
     if not raw_title:
         raw_title = ""
     clean = re.sub(r'^(?:第?\s*\d+\s*[章回\.\:\-]?\s*)+', '', raw_title).strip()
+    clean = clean_filename(clean)
     if not clean:
-        clean = raw_title.strip() or f"第{fallback_index}章"
+        clean = clean_filename(raw_title).strip() or f"第{fallback_index}章"
     m = re.search(r'\d+', raw_title)
     chap_num = int(m.group(0)) if m else fallback_index
     return f"{chap_num:02d}. {clean}"
