@@ -280,7 +280,7 @@ def run(course_id=DEFAULT_COURSE_ID, output_base=DEFAULT_BASE_DIR):
             if r_c.ok:
                 c_data = r_c.json()
                 sections = c_data.get("chapter", {}).get("sections", [])
-                exercises = [s for s in sections if s.get("resource_type") in ("exercise", "eval_test", "test")]
+                exercises = [s for s in sections if s.get("resource_type") in ("exercise", "eval_test", "test", "report")]
                 tasks.append({
                     "chap_id": chap_id,
                     "folder_name": chap_folder_name,
@@ -309,7 +309,7 @@ def run(course_id=DEFAULT_COURSE_ID, output_base=DEFAULT_BASE_DIR):
             for ex_idx, ex in enumerate(exercises, 1):
                 ex_id = ex.get("id")
                 ex_title = clean_filename(ex.get("title") or "確認テスト")
-                ex_url = f"https://www.nnn.ed.nico/contents/courses/{course_id}/chapters/{t['chap_id']}/exercises/{ex_id}/result?content_type=zen_univ"
+                ex_url = ex.get("content_url") or f"https://www.nnn.ed.nico/contents/courses/{course_id}/chapters/{t['chap_id']}/exercises/{ex_id}/result?content_type=zen_univ"
 
                 try:
                     r_ex = requests.get(ex_url, cookies=cookie_jar, timeout=20)
@@ -352,6 +352,12 @@ def run(course_id=DEFAULT_COURSE_ID, output_base=DEFAULT_BASE_DIR):
                                 'type': 'word',
                                 'question_title': q_title_txt,
                                 'correct_word': correct_word,
+                                'explanation_html': exp_html
+                            })
+                        elif q_type == 'essay' or q_li.find('textarea'):
+                            questions.append({
+                                'type': 'essay',
+                                'question_title': '【レポート記述課題】',
                                 'explanation_html': exp_html
                             })
                         else:
