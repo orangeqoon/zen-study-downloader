@@ -39,15 +39,11 @@ def format_chapter_title(raw_title, fallback_index=1):
     return f"{chap_num:02d}. {clean}"
 
 def get_firefox_cookies():
-    raw_cookies = rookiepy.firefox()
+    domains = ['ed.nico', 'nicovideo.jp', 'dwango.jp', 'nnn.ed.nico']
+    cookies_list = rookiepy.firefox(domains)
     jar = {}
-    for c in raw_cookies:
-        name = c.get("name")
-        domain = c.get("domain", "")
-        if not name or not domain:
-            continue
-        if any(k in domain for k in ['nico', 'dwango', 'nnn', 'ed.nico']):
-            jar[name] = c.get("value")
+    for c in cookies_list:
+        jar[c['name']] = c['value']
     return jar
 
 def build_exercise_html(statement_html, questions_data):
@@ -249,9 +245,8 @@ def build_exercise_html(statement_html, questions_data):
 </html>"""
     return html_out
 
-def run(course_id=DEFAULT_COURSE_ID, output_base=DEFAULT_BASE_DIR):
+def run(course_id=DEFAULT_COURSE_ID, output_base=None):
     print(f"=== Starting All-Choices Exercise Scraper for Course {course_id} ===")
-    os.makedirs(output_base, exist_ok=True)
 
     cookie_jar = get_firefox_cookies()
     print(f"Loaded session cookies from Firefox.")
@@ -264,7 +259,19 @@ def run(course_id=DEFAULT_COURSE_ID, output_base=DEFAULT_BASE_DIR):
         return
 
     data = res.json()
-    chapters = data.get("course", {}).get("chapters", [])
+    c_info = data.get("course", {})
+    sub_title = c_info.get("subject_category", {}).get("title")
+    main_title = c_info.get("title", "")
+    course_name = sub_title if sub_title else (main_title if main_title not in ["オンデマンド", "ライブ"] else f"Course_{course_id}")
+    course_name = clean_filename(course_name)
+
+    if not output_base or output_base == DEFAULT_BASE_DIR:
+        output_base = os.path.join(r"D:\ZEN大学関係\大学動画", course_name)
+
+    os.makedirs(output_base, exist_ok=True)
+    print(f"Target Output Directory: {output_base}")
+
+    chapters = c_info.get("chapters", [])
     print(f"Found {len(chapters)} chapters in course.")
 
     # 2. 各チャプター内の確認テスト (exercise) を収集
