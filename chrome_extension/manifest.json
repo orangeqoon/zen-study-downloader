@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "ZEN Study Downloader (動画＆スライド＆確認テスト一括保存)",
-  "version": "1.1.0",
-  "description": "ZEN大学の講義動画・講義スライド画像・確認テスト（解答解説付き）を1クリックで全章一括ダウンロード・自動整理する公式受講生向け支援ツール",
+  "version": "2.0.0",
+  "description": "ZEN大学の講義動画（通常＋生放送）・講義スライド画像・確認テスト（解答解説付き）を1クリックで全章一括ダウンロード・自動整理する受講生向け支援ツール",
   "permissions": [
     "webRequest",
     "storage",
