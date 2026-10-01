@@ -49,7 +49,8 @@ def build():
     print("Copied ZEN_Downloader.exe")
 
     # 3. Copy yt-dlp.exe
-    src_ytdlp = r"C:\scripts\.venv\Scripts\yt-dlp.exe"
+    scripts_dir = os.environ.get("SCRIPTS_ROOT", os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+    src_ytdlp = os.path.join(scripts_dir, ".venv", "Scripts", "yt-dlp.exe")
     if os.path.exists(src_ytdlp):
         shutil.copy2(src_ytdlp, os.path.join(PACKAGE_DIR, "yt-dlp.exe"))
         print("Copied yt-dlp.exe")

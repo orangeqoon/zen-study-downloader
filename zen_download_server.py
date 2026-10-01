@@ -18,7 +18,7 @@ import requests
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 PORT = 5000
-SCRIPTS_DIR = r"C:\scripts"
+SCRIPTS_DIR = os.environ.get("SCRIPTS_ROOT", os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 CONFIG_PATH = os.path.join(SCRIPTS_DIR, "zen_downloader_config.json")
 YTDLP_PATH = os.path.join(SCRIPTS_DIR, ".venv", "Scripts", "yt-dlp.exe")
 COOKIES_PATH = os.path.join(SCRIPTS_DIR, "cookies_nico.txt")

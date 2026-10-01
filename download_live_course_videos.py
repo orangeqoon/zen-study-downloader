@@ -115,7 +115,8 @@ def download_hls_fast(master_m3u8_url, output_path, target_resolution="270", max
     print(f"  [FAST-HLS 270p] Found {total_segs} segments (~{total_segs*3/60:.1f} mins). Starting parallel download ({max_workers} threads)...")
     
     # Download segments in parallel to temp directory
-    with tempfile.TemporaryDirectory(dir=r"C:\scripts") as temp_dir:
+    scripts_dir = os.environ.get("SCRIPTS_ROOT", os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+    with tempfile.TemporaryDirectory(dir=scripts_dir) as temp_dir:
         done_count = 0
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = [executor.submit(download_ts_segment, url, idx, temp_dir, session) for idx, url in enumerate(ts_urls)]
